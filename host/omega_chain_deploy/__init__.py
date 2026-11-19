@@ -87,13 +87,17 @@ class Deployer:
                 reason = exc.read(1000).decode(errors="replace")
             raise ChainError("node_error", f"{path}: HTTP {exc.code} {reason}", http_status=exc.code) from None
 
-    def prepare(self, term):
+    def writer_status(self):
         status = self.request("status")
         if (status.get("networkId") != self.network or status.get("shardId") != self.shard
                 or status.get("isReady") is not True or status.get("isReadOnly") is not False):
             raise ChainError("wrong_chain", "The deploy endpoint must be a ready writer on the configured network and shard")
-        key_path = os.getenv("CHAIN_DEPLOY_KEY_FILE")
-        public_key = os.getenv("CHAIN_DEPLOY_PUBLIC_KEY")
+        return status
+
+    def prepare(self, term, *, wallet_public_key=None):
+        status = self.writer_status()
+        key_path = os.getenv("CHAIN_DEPLOY_KEY_FILE") if wallet_public_key is None else None
+        public_key = os.getenv("CHAIN_DEPLOY_PUBLIC_KEY") if wallet_public_key is None else wallet_public_key
         if bool(public_key) == bool(key_path):
             raise ValueError("Configure exactly one of CHAIN_DEPLOY_PUBLIC_KEY and CHAIN_DEPLOY_KEY_FILE on the Hive host")
         latest = self.request("last-finalized-block?view=summary")

@@ -38,7 +38,7 @@ class DeployTests(unittest.TestCase):
                 status = {"networkId": writer.network, "shardId": writer.shard, "isReady": True,
                           "isReadOnly": False, "minPhloPrice": "1"}
                 finalized = {"blockInfo": {"blockNumber": 7}}
-                with patch.object(writer, "request", side_effect=[status, finalized] * 2), \
+                with patch.object(writer, "request", side_effect=[status, finalized] * 3), \
                         patch("omega_chain_deploy.time.time_ns", return_value=123456789000000):
                     path = root / "old.hex"
                     path.write_text(key.hex())
@@ -46,6 +46,8 @@ class DeployTests(unittest.TestCase):
                         original = writer.prepare("new out in { out!(42) }")
                     with patch.dict(os.environ, {"CHAIN_DEPLOY_PUBLIC_KEY": public.upper()}):
                         self.assertEqual(writer.prepare("new out in { out!(42) }"), original)
+                    with patch.dict(os.environ, {"CHAIN_DEPLOY_KEY_FILE": str(root / "other-signer.hex")}):
+                        self.assertEqual(writer.prepare("new out in { out!(42) }", wallet_public_key=public), original)
                 with patch.object(writer, "request", return_value=status), patch.dict(os.environ, {
                         "CHAIN_DEPLOY_KEY_FILE": str(path), "CHAIN_DEPLOY_PUBLIC_KEY": public}):
                     with self.assertRaisesRegex(ValueError, "exactly one"):
