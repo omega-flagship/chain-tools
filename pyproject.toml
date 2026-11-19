@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omega-chain-tools"
+version = "0.1.0"
+description = "F1R3node observer queries and optional host-side deploys for OmegaHive"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+deploy = ["coincurve>=20,<22"]
+
+[project.scripts]
+chain-tools = "chain_observer:main"
+
+[tool.setuptools]
+packages = ["omega_chain_deploy"]
+py-modules = ["chain_observer"]
+package-dir = {"" = "modules/chain_observer/src", "omega_chain_deploy" = "host/omega_chain_deploy"}
+

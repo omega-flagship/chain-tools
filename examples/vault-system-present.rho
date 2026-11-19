@@ -1,0 +1,9 @@
+new return, lookup(`rho:registry:lookup`), found in {
+  lookup!(`rho:vault:system`, *found) |
+  for (value <- found) {
+    match *value {
+      Nil => return!(false)
+      _ => return!(true)
+    }
+  }
+}

@@ -1,0 +1,4 @@
+new return in {
+  return!(42)
+}
+

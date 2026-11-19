@@ -1,0 +1,20 @@
+id = "omegahive.chain.observer"
+kind = "external-info-organ"
+version = "0.1.0"
+entrypoint = "entry.metta"
+catalog = "catalog.metta"
+signatures = "signatures.metta"
+optional = true
+default_enabled = false
+provides = ["skill:chain-status", "skill:chain-finalized-block", "skill:chain-query", "skill:chain-query-at", "skill:chain-query-base64", "skill:chain-query-at-base64"]
+requires = ["python>=3.12", "service:f1r3node-observer"]
+
+[env]
+CHAIN_OBSERVER_URL = { required = false, default = "http://127.0.0.1:40453" }
+CHAIN_SHARD_ID = { required = false, default = "root" }
+CHAIN_NETWORK_ID = { required = false, default = "testnet" }
+CHAIN_QUERY_TIMEOUT = { required = false, default = "30" }
+
+[trace]
+writes = []
+
