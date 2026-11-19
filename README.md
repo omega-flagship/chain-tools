@@ -163,8 +163,11 @@ finalization receipt. Install the optional dependency in the Hive host environme
 uv pip install --python ../omegahive/.venv/bin/python -e '.[deploy]'
 ```
 
-Set `CHAIN_DEPLOY_URL` (default `http://127.0.0.1:40413`) and
-`CHAIN_DEPLOY_KEY_FILE` (a host-only file containing one funded 32-byte hex key).
+Set `CHAIN_DEPLOY_URL` (default `http://127.0.0.1:40413`) and choose one signer:
+
+- For an encrypted host wallet, install the sibling `omega-chain-wallet` package in the same Python environment. Import the funded key using its operator CLI and set `CHAIN_DEPLOY_PUBLIC_KEY` to its full uncompressed public hex key. The wallet returns the deploy signature.
+- For a host-only hex file, set `CHAIN_DEPLOY_KEY_FILE` to the file containing the funded 32-byte key.
+
 Network and shard settings are shared with the observer. The adapter targets
 F1R3node's uint256 phlo-price wire format. Prepare gives the caller the deploy
 signature before submission so an interrupted write can be reconciled. Minds

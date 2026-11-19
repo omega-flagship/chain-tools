@@ -5,6 +5,7 @@ app actions and never receive the signing key or a generic signing skill.
 """
 
 import hashlib
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,12 @@ def _varint(number):
 def sign(term, key, timestamp, block, shard, limit, price):
     from coincurve import PrivateKey
 
+    private = PrivateKey(bytes.fromhex(key))
+    return _signed_deploy(term, timestamp, block, shard, limit, price, private.public_key.format(False).hex(),
+                          partial(private.sign, hasher=None))
+
+
+def _signed_deploy(term, timestamp, block, shard, limit, price, public_key, sign_digest):
     # DeployDataProto fields in canonical order, omitting scalar defaults.
     # uint256 phloPrice is the 32-byte unsigned field 15.
     fields = [(2, term.encode()), (3, timestamp), (8, limit), (10, block),
@@ -40,12 +47,11 @@ def sign(term, key, timestamp, block, shard, limit, price):
             wire.extend(_varint(index * 8 + 2) + _varint(len(value)) + value)
         else:
             wire.extend(_varint(index * 8) + _varint(value))
-    private = PrivateKey(bytes.fromhex(key))
     digest = hashlib.blake2b(wire, digest_size=32).digest()
     return {"data": {"term": term, "timestamp": timestamp, "phloLimit": limit,
                      "phloPrice": str(price), "shardId": shard, "validAfterBlockNumber": block},
-            "sigAlgorithm": "secp256k1", "deployer": private.public_key.format(False).hex(),
-            "signature": private.sign(digest, hasher=None).hex()}
+            "sigAlgorithm": "secp256k1", "deployer": public_key,
+            "signature": sign_digest(digest).hex()}
 
 
 def decode(expr):
@@ -87,15 +93,27 @@ class Deployer:
                 or status.get("isReady") is not True or status.get("isReadOnly") is not False):
             raise ChainError("wrong_chain", "The deploy endpoint must be a ready writer on the configured network and shard")
         key_path = os.getenv("CHAIN_DEPLOY_KEY_FILE")
-        if not key_path:
-            raise ValueError("Set CHAIN_DEPLOY_KEY_FILE on the Hive host")
+        public_key = os.getenv("CHAIN_DEPLOY_PUBLIC_KEY")
+        if bool(public_key) == bool(key_path):
+            raise ValueError("Configure exactly one of CHAIN_DEPLOY_PUBLIC_KEY and CHAIN_DEPLOY_KEY_FILE on the Hive host")
+        latest = self.request("last-finalized-block?view=summary")
+        block = latest.get("blockInfo", latest)["blockNumber"]
+        fields = (time.time_ns() // 1_000_000, block, self.shard, 5_000_000, int(status["minPhloPrice"]))
+        if public_key:
+            try:
+                from omega_chain_wallet import Wallet
+            except ModuleNotFoundError as exc:
+                raise ValueError("Install omega-chain-wallet with its dependencies on the Hive host") from exc
+            public_key = public_key.lower()
+            signer = partial(Wallet.from_env().sign_digest, public_key)
+            try:
+                return _signed_deploy(term, *fields, public_key, signer)
+            except OSError:
+                raise ValueError("Could not access the configured signing wallet") from None
         key = Path(key_path).read_text().strip()
         if not re.fullmatch("[0-9a-fA-F]{64}", key):
             raise ValueError("Signer file must contain one 32-byte hex private key")
-        latest = self.request("last-finalized-block?view=summary")
-        block = latest.get("blockInfo", latest)["blockNumber"]
-        return sign(term, key, time.time_ns() // 1_000_000, block, self.shard,
-                    5_000_000, int(status["minPhloPrice"]))
+        return sign(term, key, *fields)
 
     def submit(self, signed):
         return self.request("deploy", signed)
