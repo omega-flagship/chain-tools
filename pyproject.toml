@@ -16,7 +16,7 @@ deploy = ["coincurve>=20,<22"]
 chain-tools = "chain_observer:main"
 
 [tool.setuptools]
-packages = ["omega_chain_deploy"]
+packages = ["omega_chain_deploy", "omega_shard_telemetry"]
 py-modules = ["chain_observer"]
-package-dir = {"" = "modules/chain_observer/src", "omega_chain_deploy" = "host/omega_chain_deploy"}
+package-dir = {"" = "modules/chain_observer/src", "omega_chain_deploy" = "host/omega_chain_deploy", "omega_shard_telemetry" = "host/omega_shard_telemetry"}
 

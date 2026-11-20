@@ -201,3 +201,29 @@ The relevant node sources are `docs/node/exploratory-deploy.md`,
 `node/src/rust/web/shared_handlers.rs`, `node/src/rust/api/web_api.rs`, and
 `casper/src/rust/api/block_api.rs`. OmegaHive's module template is
 `omegahive/examples/hello-module/` in the parent workspace.
+
+## Local shard telemetry
+
+The optional host-side Python API `await omega_shard_telemetry.ShardFeed().snapshot()`
+returns a 60-second window for the OmegaHive Shard Observatory. Keep one feed
+per host event loop to share its cache. It requires the local Docker CLI and
+read access to the shard container logs. There are no additional Python
+dependencies. Reinstall the editable package after adding this host module.
+
+It reuses the observer client's readiness and shard/network checks. The
+observer and its connected peers supply the topology. For the local Compose
+names (`rnode.bootstrap`, `rnode.validatorN`, `rnode.readonly`), bounded JSON
+log reads identify the proposer, the peer named in a block response or
+incoming block, the receiver's validation verdict, and signed-deploy intake.
+The collector matches block hash and receiving node, and attaches a local
+verdict only when the transfer is unambiguous. Finalization, hash-only
+announcements and unanswered requests do not create flights. White ingress
+events include the shortened signature logged at intake. Raw deploy terms
+and signer identities are excluded. A log failure or truncated read is
+reported per node. The latest 240 transfers are returned, with separate
+proposal, confirmation, rejection and submission counts over the sampled minute.
+The separate `queueAccepted` field sums the `deploy_queue_accepted` counters
+at `GET /queue/metrics` from the connected validators’ local deploy queues.
+It counts accepted client submissions since each queue started. The adapter
+locates each published queue HTTP port with `docker port` and returns `null`
+when it cannot read a complete total. Observer failures produce an offline snapshot.
