@@ -1,11 +1,13 @@
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
+import json
+import time
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from chain_observer import ChainError
-from omega_shard_telemetry import ShardFeed, classify, members, parse_event, queue_accepted
+from omega_shard_telemetry import MAX_LINE, ShardFeed, classify, members, parse_event, queue_accepted
 
 A, B, C = "rnode.validator1", "rnode.readonly", "rnode.validator2"
 PEERS = {A, B, C}
@@ -33,11 +35,22 @@ def sent(src=A, dst=B, second=1):
     return observation(second, src, NETWORK, f"Received request for block {BLOCK}... from rnode://abc@{dst}?protocol=40400. Response sent.")
 
 
+def received(src=A, second=2):
+    return observation(second, B, NETWORK, f"Incoming BlockMessage #42 ({BLOCK}...) from {src}")
+
+
 def decision(result="Right(Valid)", node=B, second=3):
     return observation(second, node, VALIDATE, f"Block {BLOCK}... validated {result}.")
 
 
 class TransferTests(unittest.TestCase):
+    def test_transfer_id_is_independent_of_which_side_witnessed_it(self):
+        ids = []
+        for logs in ([sent()], [received()], [sent(), received()]):
+            event, = classify([proposal(), *logs, decision()])
+            ids.append(event["id"])
+        self.assertEqual(len(set(ids)), 1)
+
     def test_proposal_and_confirmation_are_one_directed_transfer(self):
         self.assertEqual(classify([proposal()]), [])
         blue, = classify([proposal(), sent()])
@@ -124,6 +137,71 @@ class QueueTests(unittest.TestCase):
 
 
 class SnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receiver_first_polls_keep_distinct_transfer_ids(self):
+        base = int(time.time()) - 10
+
+        def at(obs, seconds):
+            return replace(obs, micros=(base + seconds) * 1_000_000)
+
+        origin = at(proposal(), 0)
+        wire, receipt, verdict = at(sent(), 4), at(received(), 5), at(decision(), 6)
+        records = {A: [origin], B: [receipt, verdict]}
+        client = Mock(timeout=1)
+        client.status.return_value = STATUS
+        feed = ShardFeed()
+        with patch("omega_shard_telemetry.ObserverClient.from_env", return_value=client), patch(
+            "omega_shard_telemetry.read_node", side_effect=lambda node, *args: (records[node], None)
+        ), patch("omega_shard_telemetry.queue_accepted", return_value=0):
+            first = await feed.snapshot()
+            initial, = first["events"]
+            self.assertEqual(initial["type"], "confirmation")
+
+            feed.next_poll = 0
+            records[A] = [wire]
+            records[B] = []
+            second = await feed.snapshot()
+            updated, = second["events"]
+            self.assertEqual(updated["id"], initial["id"])
+            self.assertEqual(updated["at"], wire.micros // 1000)
+            self.assertEqual(updated["decidedAt"], initial["decidedAt"])
+            self.assertEqual(second["counts"], first["counts"])
+
+            # An earlier, separate send and receipt can also arrive late.
+            feed.next_poll = 0
+            records[A] = [at(sent(), 1)]
+            records[B] = [at(received(), 2)]
+            third = await feed.snapshot()
+            earlier, later = third["events"]
+            self.assertEqual(later["id"], initial["id"])
+            self.assertNotEqual(earlier["id"], later["id"])
+
+    async def test_oversized_record_marks_node_partial_and_preserves_following_receipt(self):
+        stamp = datetime.now(timezone.utc).isoformat()
+
+        def log_line(term, signature):
+            message = f"Received DeployData #123 -- {term} Sig: {signature} SigAlgorithm: secp256k1 ValidAfterBlockNumber: 42"
+            return json.dumps({"timestamp": stamp, "target": INTAKE, "message": message}).encode() + b"\n"
+
+        stream = asyncio.StreamReader()
+        other_signature = "a" * 20 + "..." + "b" * 20
+        stream.feed_data(log_line("x" * MAX_LINE, other_signature) + log_line("Nil", SIG))
+        stream.feed_eof()
+        process = Mock(stdout=stream, wait=AsyncMock(return_value=0), returncode=0)
+        client = Mock(timeout=1)
+        client.status.return_value = {**STATUS, "address": "rnode://self@" + A, "peerList": []}
+        feed = ShardFeed()
+        with patch("omega_shard_telemetry.ObserverClient.from_env", return_value=client), patch(
+            "omega_shard_telemetry.asyncio.create_subprocess_exec", return_value=process
+        ), patch("omega_shard_telemetry.queue_accepted", return_value=0):
+            sample = await feed.snapshot()
+        self.assertEqual(sample["state"], "partial")
+        node, = sample["nodes"]
+        self.assertEqual(node["id"], A)
+        self.assertIn("oversized", node["issue"].lower())
+        self.assertNotIn(A, feed.cursors)
+        receipt, = sample["events"]
+        self.assertEqual((sample["counts"]["deploy"], receipt["deploy"]), (1, SIG))
+
     async def test_overlapping_polls_update_the_same_transfer_and_recover(self):
         t = int(datetime.now(timezone.utc).timestamp() * 1_000_000) - 1_000_000
         origin, wire, verdict = [replace(obs, micros=t + i) for i, obs in enumerate((proposal(), sent(), decision()))]

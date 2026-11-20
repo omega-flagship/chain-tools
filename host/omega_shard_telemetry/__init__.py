@@ -107,10 +107,14 @@ def parse_event(record, node, peers):
     return Observation(micros, kind, node, ref.lower(), peer, height, reason)
 
 
+def _event_id(key):
+    return hashlib.sha256(key.encode()).hexdigest()[:24]
+
+
 def transfer(obs, src, dst, height=None):
     key = f"{obs.kind}|{obs.micros}|{src}|{dst}|{obs.ref}"
     deploy = obs.kind == "deploy"
-    return {"id": hashlib.sha256(key.encode()).hexdigest()[:24], "at": obs.micros // 1000,
+    return {"id": _event_id(key), "at": obs.micros // 1000,
             "type": "deploy" if deploy else None, "from": src, "to": dst,
             "deploy" if deploy else "block": obs.ref, "height": height,
             "proposed": False, "decidedAt": None,
@@ -125,11 +129,39 @@ def set_verdict(event, obs):
     event["detail"] = "Validated by receiver" if obs.kind == "confirmation" else f"Rejected by receiver · {obs.reason}"
 
 
-def classify(observations):
-    """Join a receiver's verdict only to a witnessed transfer of that block to that node."""
+def _identify_blocks(events, witnesses, previous_ids):
+    # Reserve existing IDs first: an older, separate send can arrive in the same poll.
+    reserved = set(previous_ids.values())
+    used = set()
+    current_ids = {}
+    attempts = defaultdict(int)
+    for event in events:
+        logs = witnesses.get(event["id"])
+        if not logs:
+            continue  # Deploys already have a receipt-specific ID.
+        known = (previous_ids[o] for o in logs if o in previous_ids)
+        event_id = next((key for key in known if key not in used), None)
+        if event_id is None:
+            route = f"{event['block']}|{event['from']}|{event['to']}"
+            while True:
+                event_id = _event_id(f"block|{route}|{attempts[route]}")
+                attempts[route] += 1
+                if event_id not in reserved:
+                    break
+        event["id"] = event_id
+        used.add(event_id)
+        current_ids.update(dict.fromkeys(logs, event_id))
+    previous_ids.clear()
+    previous_ids.update(current_ids)
+
+
+def classify(observations, previous_ids=None):
+    """Join verdicts to witnessed transfers. Pass the same ID map across overlapping samples."""
+    observations = frozenset(observations)
     origins = {(o.node, o.ref): o.height for o in observations if o.kind == "created"}
     inbound = defaultdict(list)
     received = defaultdict(list)
+    witnesses = defaultdict(list)
     events = []
     # A send precedes a receipt, then a verdict, even if their clocks round to the same microsecond.
     order = {"sent": 0, "received": 1, "refused": 1}
@@ -159,10 +191,12 @@ def classify(observations):
                 event.update(type="proposal", proposed=True, detail="Proposed block sent to peer")
             inbound[key].append(event)
             events.append(event)
+        witnesses[event["id"]].append(o)
         if o.kind != "sent":
             received[key].append(event)
         if o.kind == "refused":
             set_verdict(event, o)
+    _identify_blocks(events, witnesses, {} if previous_ids is None else previous_ids)
     return [e for e in events if e["type"] is not None]
 
 
@@ -176,6 +210,7 @@ async def read_node(node, since, peers):
     except OSError:
         return [], "Docker unavailable"
     events, count = [], 0
+    oversized = False
     try:
         async with asyncio.timeout(4):
             # Docker may include very large deploy payloads. Discard oversized lines incrementally.
@@ -186,6 +221,7 @@ async def read_node(node, since, peers):
                     if not discard:
                         pending += part
                         if len(pending) > MAX_LINE:
+                            oversized = True
                             discard, pending = True, b""
                     if i == len(parts) - 1:
                         break
@@ -211,6 +247,8 @@ async def read_node(node, since, peers):
                 pass
             # Drain the pipe after cancellation so wait() cannot deadlock on a full buffer.
             await proc.communicate()
+    if oversized:
+        return events, "Oversized log record skipped"
     return events, "Log window truncated" if count >= LOG_LINES else None
 
 
@@ -263,6 +301,7 @@ class ShardFeed:
         self.cached = None
         self.next_poll = 0
         self.history = set()
+        self.transfer_ids = {}
         self.cursors = {}
 
     async def snapshot(self):
@@ -285,6 +324,7 @@ class ShardFeed:
             status = await asyncio.to_thread(client.status)
         except ChainError as exc:
             self.history.clear()
+            self.transfer_ids.clear()
             self.cursors.clear()
             return {**data, "note": str(exc)}
 
@@ -306,7 +346,8 @@ class ShardFeed:
             self.history.update(events)
         # Keep context just beyond the public window so an overlapping poll can resolve a late verdict.
         self.history = {o for o in self.history if o.micros >= (start - 30) * 1_000_000}
-        active = [e for e in classify(self.history) if (e["decidedAt"] or e["at"]) >= start * 1000]
+        events = classify(self.history, self.transfer_ids)
+        active = [e for e in events if (e["decidedAt"] or e["at"]) >= start * 1000]
         ordered = sorted(active, key=lambda e: (e["decidedAt"] or e["at"], e["id"]))
         for event in ordered:
             if event["proposed"] and event["at"] >= start * 1000:
